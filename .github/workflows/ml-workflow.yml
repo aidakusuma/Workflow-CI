@@ -1,233 +1,208 @@
-name: MLflow Weather Prediction CI
+name: ML Pipeline CI/CD
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, develop ]
+    paths:
+      - 'MLProject/**'
+      - '.github/workflows/**'
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
+    paths:
+      - 'MLProject/**'
   workflow_dispatch:
+    inputs:
+      model_type:
+        description: 'Model to train'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - random_forest
+          - linear_regression
+          - decision_tree
 
 jobs:
-  train-model:
+  test-and-train:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout Repository
+    - name: Checkout code
       uses: actions/checkout@v4
-      
-    - name: Setup Miniconda
-      uses: conda-incubator/setup-miniconda@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
       with:
-        activate-environment: ml-env
-        environment-file: conda.yaml
-        python-version: 3.9
-        auto-activate-base: false
-        
-    - name: Verify Environment Setup
-      shell: bash -l {0}
+        python-version: '3.9'
+    
+    - name: Set up Conda
+      uses: conda-incubator/setup-miniconda@v2
+      with:
+        auto-update-conda: true
+        python-version: '3.9'
+        environment-file: MLProject/conda.yaml
+        activate-environment: weather_prediction_env
+    
+    - name: Verify environment
+      shell: bash -el {0}
       run: |
-        echo "=== Checking Python and Conda ==="
-        python --version
-        conda --version
-        conda list | head -20
-        
-    - name: Install MLflow and Additional Dependencies
-      shell: bash -l {0}
+        conda info
+        conda list
+    
+    - name: Install additional dependencies
+      shell: bash -el {0}
       run: |
-        echo "=== Installing MLflow ==="
-        pip install mlflow
-        pip install matplotlib seaborn
-        echo "=== Installed packages ==="
-        pip list | grep -E "(mlflow|matplotlib|seaborn)"
-        
-    - name: Create Sample Data
-      shell: bash -l {0}
+        pip install mlflow click
+    
+    - name: Check data file
       run: |
-        echo "=== Creating sample weather data ==="
+        if [ -f "MLProject/weatherdata_preprocessing.csv" ]; then
+          echo "✓ Data file found"
+          head -5 MLProject/weatherdata_preprocessing.csv
+        else
+          echo "⚠️  Data file not found - creating sample data"
+          python -c "
+import pandas as pd
+import numpy as np
+
+# Generate sample weather data
+np.random.seed(42)
+n_samples = 1000
+
+data = {
+    'Location': np.random.choice(['CityA', 'CityB', 'CityC', 'CityD'], n_samples),
+    'Temperature_C': np.random.normal(25, 10, n_samples),
+    'Humidity_pct': np.random.uniform(30, 90, n_samples),
+    'Precipitation_mm': np.random.exponential(2, n_samples),
+    'Wind_Speed_kmh': np.random.uniform(0, 50, n_samples)
+}
+
+df = pd.DataFrame(data)
+df.to_csv('MLProject/weatherdata_preprocessing.csv', index=False)
+print('Sample data created successfully')
+"
+        fi
+    
+    - name: Run MLflow project - Data validation
+      shell: bash -el {0}
+      run: |
+        cd MLProject
         python -c "
-        import pandas as pd
-        import numpy as np
-        
-        np.random.seed(42)
-        n_samples = 1000
-        
-        data = {
-            'Location': np.random.choice(['Jakarta', 'Bandung', 'Surabaya', 'Medan', 'Makassar'], n_samples),
-            'Temperature_C': np.random.normal(27, 5, n_samples),
-            'Humidity_pct': np.random.uniform(60, 90, n_samples),
-            'Precipitation_mm': np.random.exponential(2, n_samples),
-            'Wind_Speed_kmh': np.random.uniform(5, 25, n_samples)
-        }
-        
-        df = pd.DataFrame(data)
-        df['Temperature_C'] = np.round(df['Temperature_C'], 1)
-        df['Humidity_pct'] = np.round(df['Humidity_pct'], 1)
-        df['Precipitation_mm'] = np.round(df['Precipitation_mm'], 2)
-        df['Wind_Speed_kmh'] = np.round(df['Wind_Speed_kmh'], 1)
-        
-        df.to_csv('weatherdata_preprocessing.csv', index=False)
-        print(f'Sample data created: {df.shape}')
-        print(df.head())
-        "
-        
-    - name: Prepare Modeling Script for CI
-      shell: bash -l {0}
+import pandas as pd
+df = pd.read_csv('weatherdata_preprocessing.csv')
+print('Data shape:', df.shape)
+print('Columns:', df.columns.tolist())
+print('Data types:')
+print(df.dtypes)
+print('Missing values:')
+print(df.isnull().sum())
+"
+    
+    - name: Run MLflow project - Model training
+      shell: bash -el {0}
       run: |
-        echo "=== Creating CI-compatible modeling script ==="
-        cat > modelling_ci.py << 'EOF'
-        import mlflow
-        import mlflow.sklearn
-        import pandas as pd
-        import numpy as np
-        from sklearn.model_selection import train_test_split
-        from sklearn.ensemble import RandomForestRegressor
-        from sklearn.linear_model import LinearRegression
-        from sklearn.tree import DecisionTreeRegressor
-        from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
-        from sklearn.preprocessing import LabelEncoder
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        import warnings
-        warnings.filterwarnings('ignore')
+        cd MLProject
+        export MLFLOW_TRACKING_URI=file:./mlruns
         
-        def load_and_prepare_data():
-            print("Loading and preparing data...")
-            csv_path = "weatherdata_preprocessing.csv"
-            
-            try:
-                df = pd.read_csv(csv_path)
-                print(f"Data loaded successfully: {df.shape}")
-                
-                if 'Location' in df.columns:
-                    le = LabelEncoder()
-                    df['Location_encoded'] = le.fit_transform(df['Location'])
-                
-                feature_columns = ['Location_encoded', 'Humidity_pct', 'Precipitation_mm', 'Wind_Speed_kmh']
-                X = df[feature_columns]
-                y = df['Temperature_C']
-                
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-                
-                print(f"Data prepared: {X.shape[0]} samples, {X.shape[1]} features")
-                return X_train, X_test, y_train, y_test, feature_columns
-                
-            except Exception as e:
-                print(f"Error loading data: {str(e)}")
-                return None, None, None, None, None
-        
-        def train_model(model, model_name, X_train, X_test, y_train, y_test, feature_columns):
-            with mlflow.start_run(run_name=f"{model_name}_experiment"):
-                mlflow.sklearn.autolog()
-                
-                print(f"\n--- Training {model_name} ---")
-                
-                model.fit(X_train, y_train)
-                y_test_pred = model.predict(X_test)
-                
-                test_mse = mean_squared_error(y_test, y_test_pred)
-                test_r2 = r2_score(y_test, y_test_pred)
-                test_mae = mean_absolute_error(y_test, y_test_pred)
-                
-                mlflow.log_metric("test_mse", test_mse)
-                mlflow.log_metric("test_r2", test_r2)
-                mlflow.log_metric("test_mae", test_mae)
-                mlflow.log_param("model_type", model_name)
-                
-                plt.figure(figsize=(8, 4))
-                plt.scatter(y_test, y_test_pred, alpha=0.6)
-                plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--', lw=2)
-                plt.xlabel('Actual Temperature')
-                plt.ylabel('Predicted Temperature')
-                plt.title(f'{model_name} - Actual vs Predicted')
-                plt.savefig(f'{model_name}_evaluation.png')
-                mlflow.log_artifact(f'{model_name}_evaluation.png')
-                plt.close()
-                
-                print(f"Test MSE: {test_mse:.4f}")
-                print(f"Test R²: {test_r2:.4f}")
-                print(f"Test MAE: {test_mae:.4f}")
-                
-                return model
-        
-        def main():
-            print("=== MLflow Weather Prediction Experiment ===")
-            
-            mlflow.set_tracking_uri("file:./mlruns")
-            mlflow.set_experiment("Weather_Prediction_CI")
-            
-            X_train, X_test, y_train, y_test, feature_columns = load_and_prepare_data()
-            
-            if X_train is None:
-                print("Data loading failed. Exiting...")
-                return
-            
-            models = {
-                "RandomForest": RandomForestRegressor(n_estimators=10, random_state=42),
-                "LinearRegression": LinearRegression(),
-                "DecisionTree": DecisionTreeRegressor(max_depth=5, random_state=42)
-            }
-            
-            trained_models = {}
-            for model_name, model in models.items():
-                try:
-                    trained_model = train_model(model, model_name, X_train, X_test, y_train, y_test, feature_columns)
-                    trained_models[model_name] = trained_model
-                    print(f"✅ {model_name} trained successfully")
-                except Exception as e:
-                    print(f"❌ Error training {model_name}: {str(e)}")
-            
-            print(f"\n=== Experiment Completed ===")
-            print(f"Total models trained: {len(trained_models)}")
-            
-            with open('training_summary.txt', 'w') as f:
-                f.write("=== MLflow Training Summary ===\n")
-                f.write(f"Models trained: {len(trained_models)}\n")
-                f.write(f"Models: {list(trained_models.keys())}\n")
-                f.write(f"Features used: {feature_columns}\n")
-            
-            print("Training summary saved")
-        
-        if __name__ == "__main__":
-            main()
-        EOF
-        echo "✅ CI modeling script created"
-        
-    - name: Run MLflow Training
-      shell: bash -l {0}
-      run: |
-        echo "=== Running MLflow Training ==="
-        python modelling_ci.py
-        
-    - name: Check Training Results
-      shell: bash -l {0}
-      run: |
-        echo "=== Checking Training Results ==="
-        ls -la
-        
-        if [ -d "mlruns" ]; then
-          echo "✅ MLflow runs directory created"
-          find mlruns -type f | head -10
+        # Determine which model to train
+        if [ "${{ github.event.inputs.model_type }}" != "" ]; then
+          MODEL_TYPE="${{ github.event.inputs.model_type }}"
+        else
+          MODEL_TYPE="all"
         fi
         
-        if ls *.png 1> /dev/null 2>&1; then
-          echo "✅ Visualization plots created:"
-          ls -la *.png
-        fi
+        echo "Training model type: $MODEL_TYPE"
         
-        if [ -f "training_summary.txt" ]; then
-          echo "✅ Training summary:"
-          cat training_summary.txt
-        fi
+        # Run the training
+        python modelling.py --model $MODEL_TYPE --data_path weatherdata_preprocessing.csv
+    
+    - name: Generate training report
+      shell: bash -el {0}
+      run: |
+        cd MLProject
+        python -c "
+import mlflow
+import pandas as pd
+import os
+
+# Set tracking URI
+mlflow.set_tracking_uri('file:./mlruns')
+
+# Get the experiment
+experiment = mlflow.get_experiment_by_name('Weather_Prediction_Experiment')
+if experiment:
+    runs = mlflow.search_runs(experiment_ids=[experiment.experiment_id])
+    if not runs.empty:
+        print('=== Training Report ===')
+        print(f'Total runs: {len(runs)}')
+        print()
         
-    - name: Upload Training Artifacts
+        # Sort by test_r2 descending
+        if 'metrics.test_r2' in runs.columns:
+            runs_sorted = runs.sort_values('metrics.test_r2', ascending=False)
+            
+            print('Best performing models:')
+            for idx, row in runs_sorted.head(3).iterrows():
+                print(f'Model: {row.get(\"params.model_type\", \"Unknown\")}')
+                print(f'  Test R²: {row.get(\"metrics.test_r2\", \"N/A\"):.4f}')
+                print(f'  Test MSE: {row.get(\"metrics.test_mse\", \"N/A\"):.4f}')
+                print(f'  Test MAE: {row.get(\"metrics.test_mae\", \"N/A\"):.4f}')
+                print()
+        else:
+            print('No test metrics found in runs')
+            print('Available columns:', runs.columns.tolist())
+    else:
+        print('No runs found in experiment')
+else:
+    print('Experiment not found')
+"
+    
+    - name: Upload MLflow artifacts
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: mlflow-training-results
+        name: mlflow-artifacts
         path: |
-          mlruns/
-          *.png
-          *.txt
-          *.csv
+          MLProject/mlruns/
+          MLProject/*.png
         retention-days: 30
+    
+    - name: Upload training logs
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: training-logs
+        path: |
+          MLProject/*.log
+        retention-days: 7
+
+  docker-build:
+    needs: test-and-train
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./MLProject
+        file: ./MLProject/Dockerfile
+        push: true
+        tags: |
+          ${{ secrets.DOCKER_USERNAME }}/weather-prediction-ml:latest
+          ${{ secrets.DOCKER_USERNAME }}/weather-prediction-ml:${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
