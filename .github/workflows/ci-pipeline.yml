@@ -1,0 +1,221 @@
+name: ML Model CI Pipeline
+
+# Trigger workflow
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  ml-training:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # Step 1: Checkout code
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    # Step 2: Setup Python with Miniconda
+    - name: Setup Miniconda
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        activate-environment: ml-env
+        environment-file: conda.yaml
+        python-version: 3.9
+        auto-activate-base: false
+        
+    # Step 3: Verify environment
+    - name: Verify Conda Environment
+      shell: bash -l {0}
+      run: |
+        echo "=== Conda Info ==="
+        conda info
+        echo "=== Conda List ==="
+        conda list
+        echo "=== Python Version ==="
+        python --version
+        echo "=== Current Directory ==="
+        pwd
+        ls -la
+        
+    # Step 4: Check required files
+    - name: Check Required Files
+      shell: bash -l {0}
+      run: |
+        echo "=== Checking required files ==="
+        if [ -f "conda.yaml" ]; then
+          echo "✅ conda.yaml found"
+        else
+          echo "❌ conda.yaml not found"
+          exit 1
+        fi
+        
+        if [ -f "modelling.py" ]; then
+          echo "✅ modelling.py found"
+        else
+          echo "❌ modelling.py not found"
+          exit 1
+        fi
+        
+        if [ -d "data" ]; then
+          echo "✅ data directory found"
+          echo "Data files:"
+          ls -la data/
+        else
+          echo "❌ data directory not found"
+          exit 1
+        fi
+        
+    # Step 5: Install additional dependencies
+    - name: Install Additional Dependencies
+      shell: bash -l {0}
+      run: |
+        echo "=== Installing additional packages ==="
+        pip install --upgrade pip
+        # Install any additional packages if needed
+        echo "Dependencies installation completed"
+        
+    # Step 6: Run ML Model Training
+    - name: Run ML Model Training
+      shell: bash -l {0}
+      run: |
+        echo "=== Starting ML Model Training ==="
+        python modelling.py
+        echo "=== Training completed ==="
+        
+    # Step 7: Verify model output
+    - name: Verify Model Output
+      shell: bash -l {0}
+      run: |
+        echo "=== Checking model output ==="
+        ls -la
+        
+        # Check for common model file extensions
+        model_found=false
+        
+        for ext in pkl joblib h5 json; do
+          if ls *.$ext 1> /dev/null 2>&1; then
+            echo "✅ Found .$ext model files:"
+            ls -la *.$ext
+            model_found=true
+          fi
+        done
+        
+        # Check for model directory
+        if [ -d "model" ] || [ -d "models" ]; then
+          echo "✅ Found model directory:"
+          ls -la model* 2>/dev/null || true
+          model_found=true
+        fi
+        
+        if [ "$model_found" = false ]; then
+          echo "⚠️ No model files found, but training completed"
+        fi
+        
+    # Step 8: Run basic model validation
+    - name: Validate Model (if exists)
+      shell: bash -l {0}
+      run: |
+        echo "=== Model Validation ==="
+        python -c "
+import os
+import sys
+
+print('Python path:', sys.path)
+print('Current directory:', os.getcwd())
+print('Files in current directory:')
+for f in os.listdir('.'):
+    print(f'  {f}')
+
+# Try to import common ML libraries
+try:
+    import pandas as pd
+    print('✅ pandas imported successfully')
+except:
+    print('❌ pandas import failed')
+
+try:
+    import numpy as np
+    print('✅ numpy imported successfully')
+except:
+    print('❌ numpy import failed')
+
+try:
+    import sklearn
+    print('✅ sklearn imported successfully')
+except:
+    print('❌ sklearn import failed')
+
+# Check if model files exist
+model_files = []
+for ext in ['pkl', 'joblib', 'h5', 'json']:
+    files = [f for f in os.listdir('.') if f.endswith(f'.{ext}')]
+    model_files.extend(files)
+
+if model_files:
+    print(f'✅ Model files found: {model_files}')
+else:
+    print('ℹ️ No model files to validate')
+"
+        
+    # Step 9: Upload artifacts
+    - name: Upload Model Artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: ml-model-artifacts
+        path: |
+          *.pkl
+          *.joblib
+          *.h5
+          *.json
+          model/
+          models/
+          logs/
+          *.log
+        retention-days: 30
+        if-no-files-found: warn
+        
+    # Step 10: Create summary report
+    - name: Create Training Summary
+      shell: bash -l {0}
+      if: always()
+      run: |
+        echo "# ML Training Summary Report" > training_summary.md
+        echo "" >> training_summary.md
+        echo "## Workflow Information" >> training_summary.md
+        echo "- **Date**: $(date)" >> training_summary.md
+        echo "- **Repository**: ${{ github.repository }}" >> training_summary.md
+        echo "- **Branch**: ${{ github.ref_name }}" >> training_summary.md
+        echo "- **Commit**: ${{ github.sha }}" >> training_summary.md
+        echo "- **Workflow Status**: ${{ job.status }}" >> training_summary.md
+        echo "" >> training_summary.md
+        echo "## Environment Information" >> training_summary.md
+        echo "- **Python Version**: $(python --version)" >> training_summary.md
+        echo "- **OS**: Ubuntu Latest" >> training_summary.md
+        echo "- **Conda Environment**: ml-env" >> training_summary.md
+        echo "" >> training_summary.md
+        echo "## Files Processed" >> training_summary.md
+        echo "- **Training Script**: modelling.py" >> training_summary.md
+        echo "- **Environment File**: conda.yaml" >> training_summary.md
+        echo "- **Data Directory**: data/" >> training_summary.md
+        echo "" >> training_summary.md
+        echo "## Output Files" >> training_summary.md
+        ls -la *.pkl *.joblib *.h5 *.json model/ models/ 2>/dev/null | sed 's/^/- /' >> training_summary.md || echo "- No model files generated" >> training_summary.md
+        echo "" >> training_summary.md
+        echo "---" >> training_summary.md
+        echo "*Generated by GitHub Actions CI Pipeline*" >> training_summary.md
+        
+        echo "=== Training Summary ==="
+        cat training_summary.md
+        
+    # Step 11: Upload summary report
+    - name: Upload Training Summary
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: training-summary-report
+        path: training_summary.md
+        retention-days: 30
