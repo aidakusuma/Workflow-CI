@@ -3,7 +3,9 @@ name: MLflow CI Pipeline
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch:
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # Manual trigger
 
 jobs:
   train-model:
@@ -31,8 +33,23 @@ jobs:
     - name: Build Docker image
       run: |
         cd MLProject
-        docker build -t weather-prediction-model:test .
+        docker build -t weather-prediction-model:${{ github.sha }} .
     
     - name: Test Docker container
       run: |
-        docker run --rm weather-prediction-model:test
+        docker run --rm weather-prediction-model:${{ github.sha }}
+    
+    - name: Login to Docker Hub
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    
+    - name: Push to Docker Hub
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        docker tag weather-prediction-model:${{ github.sha }} ${{ secrets.DOCKER_USERNAME }}/weather-prediction-model:latest
+        docker tag weather-prediction-model:${{ github.sha }} ${{ secrets.DOCKER_USERNAME }}/weather-prediction-model:${{ github.sha }}
+        docker push ${{ secrets.DOCKER_USERNAME }}/weather-prediction-model:latest
+        docker push ${{ secrets.DOCKER_USERNAME }}/weather-prediction-model:${{ github.sha }}
