@@ -1,7 +1,5 @@
-# Use official Python runtime as base image
 FROM python:3.9-slim
 
-# Set working directory
 WORKDIR /app
 
 # Install system dependencies
@@ -9,33 +7,22 @@ RUN apt-get update && apt-get install -y \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy conda environment file
+# Copy requirements
 COPY conda.yaml .
+COPY modelling.py .
+COPY weatherdata_preprocessing.csv* ./
 
-# Install conda
-RUN apt-get update && apt-get install -y wget && \
-    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
-    bash Miniconda3-latest-Linux-x86_64.sh -b -p /opt/conda && \
-    rm Miniconda3-latest-Linux-x86_64.sh
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    mlflow==2.8.1 \
+    scikit-learn==1.3.0 \
+    pandas==2.0.3 \
+    numpy==1.24.3 \
+    matplotlib==3.7.2 \
+    seaborn==0.12.2
 
-# Add conda to path
-ENV PATH="/opt/conda/bin:${PATH}"
+# Set environment variable for CI
+ENV CI=true
 
-# Create conda environment
-RUN conda env create -f conda.yaml
-
-# Make RUN commands use the new environment
-SHELL ["conda", "run", "-n", "weather_prediction_env", "/bin/bash", "-c"]
-
-# Copy project files
-COPY . .
-
-# Set environment variables
-ENV MLFLOW_TRACKING_URI=file:./mlruns
-ENV PYTHONPATH=/app
-
-# Expose MLflow UI port
-EXPOSE 5000
-
-# Default command
-CMD ["conda", "run", "-n", "weather_prediction_env", "python", "modelling.py"]
+# Run the model
+CMD ["python", "modelling.py"]
