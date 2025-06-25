@@ -1,15 +1,14 @@
-name: weather_prediction_env
+name: mlflow-weather-prediction
 channels:
   - conda-forge
   - defaults
 dependencies:
   - python=3.9
   - pip
-  - numpy
-  - pandas
-  - scikit-learn
-  - matplotlib
-  - seaborn
   - pip:
-    - mlflow
-    - click
+    - mlflow==2.8.1
+    - scikit-learn==1.3.0
+    - pandas==2.0.3
+    - numpy==1.24.3
+    - matplotlib==3.7.2
+    - seaborn==0.12.2
